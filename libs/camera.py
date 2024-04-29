@@ -63,6 +63,7 @@ class VideoCamera:
     # When the VideoCamera object is destroyed, release the video capture
     def __del__(self):
         self.cap.release()
+        
 
     # Get the properties of the video capture
     def _get_cap_prop(self):

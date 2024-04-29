@@ -14,7 +14,7 @@ from libs.utils import get_box_coordinates  # Function to get bounding box coord
 import pickle as pkl  # Used for serializing and de-serializing Python object structures
 import configparser  # Used for handling .ini files
 from scipy import stats  # SciPy library for scientific computations
-
+import csv  # Used for reading and writing CSV files
 from libs.kalman_filter import KalmanFilter  # Importing the KalmanFilter class from the kalman_filter module
 
 logger = getLogger(__name__)  # Creating a logger
@@ -94,6 +94,8 @@ class Tracker:
         self.euc_distances = []
         self.tracks = []
         self.tracker_prev_time = timer()
+        self.person_to_tracks = {}  # Mapping from person IDs to lists of track IDs
+        self.track_to_person = {}   # Mapping from track IDs to person IDs
         self.tracker_accum_time = 0
         self.counter_stats = {"top": 0, "bottom": 0, "left": 0, "right": 0}
         self.colors = pkl.load(open("pallete", "rb"))
@@ -507,7 +509,7 @@ class Tracker:
             mean = euc_distances.mean()
             std = stats.tstd(euc_distances)
             # min, max = stats.norm.interval(alpha=0.95, loc=mean, scale=std)
-            min, max = stats.norm.interval(alpha=0.99, loc=mean, scale=std)
+            min, max = stats.norm.interval(confidence=0.99, loc=mean, scale=std)
         else:
             mean, std = 0.0, 0.0
             min, max = 0.0, detection.box_w
@@ -679,6 +681,36 @@ class Tracker:
         active_track_ids = [t.track_id for t in self.tracks if t.stats != DELETED]
 
         return active_track_ids
+    
+    
+
+    def save_feature_vectors_to_csv(self, csv_file='feature_vectors.csv'):
+        # First, we need to create a mapping from person_id to track feature vectors
+        person_to_feature_vectors = {}
+
+        # Go through all tracks and group their feature vectors by person_id
+        for track in self.tracks:
+            if track.stats != DELETED and track.person_id is not None:
+                # If this is the first time we're seeing this person_id, initialize the list
+                if track.person_id not in person_to_feature_vectors:
+                    person_to_feature_vectors[track.person_id] = []
+                
+                # Append the feature vector of the track to the person's list of vectors
+                person_to_feature_vectors[track.person_id].append(self.track_vecs[track.track_id])
+        
+        # Now we'll write the aggregated feature vectors to the CSV
+        with open(csv_file, mode='w', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow(['Person ID', 'Aggregated Feature Vector'])
+            
+            for person_id, feature_vectors in person_to_feature_vectors.items():
+                # We'll average all the feature vectors for this person_id
+                # You can choose a different aggregation method if needed
+                aggregated_vector = np.mean(feature_vectors, axis=0)
+                vector_flat = aggregated_vector.flatten().tolist()
+                writer.writerow([person_id, vector_flat])
+
+        logger.info(f"Saved feature vectors to {csv_file}")
 
     def person_reidentification(self, frame, person_frames, boxes):
         # Preprocess to update the state of existing tracks and determine which are active
@@ -792,6 +824,7 @@ class Tracker:
         self.prev_feature_vecs = feature_vecs
         self.prev_track_boxes = boxes
 
+        self.save_feature_vectors_to_csv()
         return frame
 
     def show_log(self, det_id, detection):

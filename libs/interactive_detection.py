@@ -41,10 +41,10 @@ class Detectors:
     # Define the models
     def _define_models(self):
         # Define the path for the person detection model
-        fp_path = "FP16-INT8" if self.device_det == "CPU" else "FP16"
+        fp_path = "FP16" if self.device_det == "CPU" else "FP16"
         self.model_det = f"{model_path}/{model_det}/{fp_path}/{model_det}.xml"
         # Define the path for the person re-identification model
-        fp_path = "FP16-INT8" if self.device_reid == "CPU" else "FP16"
+        fp_path = "FP16" if self.device_reid == "CPU" else "FP16"
         self.model_reid = f"{model_path}/{model_reid}/{fp_path}/{model_reid}.xml"
 
     # Load the detectors
