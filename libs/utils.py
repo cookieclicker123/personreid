@@ -14,14 +14,26 @@ def resize_frame(frame, height):
         traceback.print_exc()  # Print stack trace if OpenCV encounters an error during resizing.
     return frame  # Return the resized frame.
 
+#updated to handle 1D and 2D arrays
 def cos_similarity(X, Y):
-    """Calculate the cosine similarity between two matrices X and Y."""
-    m = X.shape[0]  # Number of rows in X, each row is a vector.
-    Y = Y.T  # Transpose Y to match the dimensions for dot product calculation.
-    # Calculate cosine similarity:
-    return np.dot(X, Y) / (
-        np.linalg.norm(X.T, axis=0).reshape(m, 1) * np.linalg.norm(Y, axis=0)
-    )
+    """Calculate the cosine similarity between two arrays X and Y."""
+    if X.ndim == 1 and Y.ndim == 1:
+        dot_product = np.dot(X, Y)
+        magnitude = np.linalg.norm(X) * np.linalg.norm(Y)
+        if magnitude == 0:
+            return 0
+        return dot_product / magnitude
+    else:
+        X = X if X.ndim > 1 else X[None, :]
+        Y = Y.T if Y.ndim > 1 else Y[None, :].T
+        dot_product = np.dot(X, Y)
+        magnitude = np.linalg.norm(X, axis=1)[:, None] * np.linalg.norm(Y, axis=0)
+        magnitude_zero = magnitude == 0
+        if np.any(magnitude_zero):
+            dot_product[magnitude_zero] = 0
+            magnitude[magnitude_zero] = 1  # To avoid division by zero
+        return dot_product / magnitude
+
 
 def get_euclidean_distance(x, Y):
     """Calculate the Euclidean distance between a vector x and each vector in matrix Y."""

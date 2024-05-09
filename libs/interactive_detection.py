@@ -6,6 +6,18 @@ from timeit import default_timer as timer
 from libs.tracker import Tracker
 import libs.detectors as detectors
 import configparser
+import torchreid
+from ultralytics import YOLO
+import torch
+import supervision as sv
+
+
+# Check if MPS is supported and available
+
+
+yolo_model = YOLO("yolov9e.pt").to("cpu")
+
+
 
 # Create a logger object
 logger = getLogger(__name__)
@@ -215,10 +227,12 @@ class Detections(Detectors):
 
         return person_frames, boxes
 
+    
     def person_detection(self, frame, is_async, is_det, is_reid, frame_id, show_track):
         # Give the frame_id with tracker instance
         self.tracker.frame_id = frame_id
         self.tracker.show_track = show_track
+
 
         # init params
         det_time = 0
@@ -242,11 +256,26 @@ class Detections(Detectors):
             self.prev_frame = frame.copy()
 
         if is_det or is_reid:
-
+            results = yolo_model(frame)[0]
+            height, width = frame.shape[:2]
+            detections = sv.Detections.from_ultralytics(results)
+            persons2 = [[[]]]
+            for i, bbox in enumerate(detections.xyxy):
+                class_name = detections.data['class_name'][i]
+                if class_name != 'person':
+                    continue  # Skip if not a person
+                
+                confidence = detections.confidence[i]
+                left, top, right, bottom = map(int, bbox)
+                persons2[0][0].append([0,1,confidence,left/width, top/height, right/width, bottom/height])
+            person2_a = np.array(persons2)
+            print("Persons 2:", person2_a)
+            persons = person2_a
             # ----------- Person Detection ---------- #
             inf_start = timer()
-            self.person_detector.infer(self.prev_frame, frame, is_async)
-            persons = self.person_detector.get_results(is_async, prob_thld_person)
+            #self.person_detector.infer(self.prev_frame, frame, is_async)
+            #persons = self.person_detector.get_results(is_async, prob_thld_person)
+            #print("Person:", persons)
             inf_end = timer()
             det_time_det = inf_end - inf_start
             det_time_txt = f"person det:{det_time_det * 1000:.3f} ms "

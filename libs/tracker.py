@@ -17,10 +17,14 @@ from scipy import stats  # SciPy library for scientific computations
 import csv  # Used for reading and writing CSV files
 from libs.kalman_filter import KalmanFilter  # Importing the KalmanFilter class from the kalman_filter module
 
+csv_feature_vecs = [] # List to store feature vectors from labeled data
+
 logger = getLogger(__name__)  # Creating a logger
 
 config = configparser.ConfigParser()  # Creating a config parser
 config.read("config.ini")  # Reading the configuration file
+# To print out all the sections in the config file
+print(config.sections())
 
 # Setting tracking parameters from the configuration file
 reid_limit = eval(config.get("TRACKER", "reid_limit"))
@@ -33,6 +37,8 @@ max_grid = eval(config.get("TRACKER", "max_grid"))
 lost_thld = eval(config.get("TRACKER", "lost_thld"))
 hold_track = eval(config.get("TRACKER", "hold_track"))
 show_track = eval(config.get("TRACKER", "show_track"))
+name_threshold = eval(config.get("TRACKER", "name_threshold"))
+
 
 # Setting basic colors from the configuration file
 green = eval(config.get("COLORS", "green"))
@@ -65,6 +71,7 @@ class Track:
         self.kf = KalmanFilter(center)
         self.is_matched = False
         self.direction = None
+        self.feature_vectors = []  # Initialize an empty list to hold feature vectors
 
     def update(self):
         self.hits += 1
@@ -80,6 +87,8 @@ class Track:
 class Tracker:
     def __init__(self, detector, frame, grid):
         # initialize tracker parameters
+        # Load named feature vectors
+        self.named_feature_vectors = self.load_named_feature_vectors('labeled_feature_vectors.csv')
         self.person_id_detector = detector
         self.frame_id = 0
         self.show_track = show_track
@@ -380,12 +389,18 @@ class Tracker:
         return frame
 
     def draw_track_info(self, frame, track_id, box=None, confidence=None):
-        # Draw traking info only when track states is confirmed
+        # Draw tracking info only when track state is confirmed
         track = self.tracks[track_id]
         if track.stats != CONFIRMED:
             return frame
 
-        # Get person's color for draw rectrangle and tracked points
+        # Check if the person_id is a name or a numerical ID
+        display_id = str(track.person_id) if isinstance(track.person_id, int) else track.person_id
+
+        # Get the last known track point for positioning the ID on the frame
+        x, y = self.track_points[track_id][-1]
+
+        # Use the color assigned to this track
         color = self.get_color(track.person_id)
 
         # Set similarity as confidence
@@ -394,16 +409,28 @@ class Tracker:
         # Draw reid box
         frame = self.draw_reid_box(frame, track_id, box, conf, color)
 
-        # Draw track porints
-        tp = np.array(self.track_points[track_id])
-        track_points = tp[~np.isnan(tp).any(axis=1)].astype(int)
-        if len(track_points) > 2:
-            frame = self.draw_track_points(frame, track_points, color)
+        # Place the display ID (name or numeric ID) on the frame
+        cv2.putText(
+            frame,
+            display_id,
+            (int(x), int(y) - 10),  # Adjusted for text positioning
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            color,
+            2,
+        )
+
+        # Draw track points
+        track_points = np.array(self.track_points[track_id])
+        valid_track_points = track_points[~np.isnan(track_points).any(axis=1)].astype(int)
+        if len(valid_track_points) > 2:
+            frame = self.draw_track_points(frame, valid_track_points, color)
 
         # Count a person by the direction when the person is out of counter area
-        if track_points.any():
-            if self.enable_count and self.is_out_of_track_area(track_points[-1]):
+        if valid_track_points.any():
+            if self.enable_count and self.is_out_of_track_area(valid_track_points[-1]):
                 self.count_person(track_id)
+        
         return frame
 
     def first_detection(self, feature_vecs, boxes):
@@ -428,11 +455,21 @@ class Tracker:
         cy = (ymax - ymin) / 2 + ymin
         return cx, cy
 
-    def get_color(self, person_id: int) -> tuple:
-        # Difine person's color from Pallete (self.colors) with 100 colors.
-        # The 100th person_id will use the first index's color again.
-        color_id = person_id - len(self.colors) * (person_id // len(self.colors))
-        return self.colors[color_id]
+    def get_color(self, person_id) -> tuple:
+        # If person_id is an int, we proceed as before
+        if isinstance(person_id, int):
+            color_id = person_id - len(self.colors) * (person_id // len(self.colors))
+            return self.colors[color_id]
+        # If person_id is a string, we use a hash to get a consistent color for the name
+        elif isinstance(person_id, str):
+            # Hash the name and take the absolute value to ensure it's non-negative
+            hash_value = abs(hash(person_id))
+            # Use the hash value to select a color from the palette
+            color_id = hash_value % len(self.colors)
+            return self.colors[color_id]
+        # If person_id is neither, return a default color (white for example)
+        else:
+            return (255, 255, 255)
 
     def get_box_info(self, det_id: int, boxes, feature_vecs) -> tuple:
         box = boxes[det_id]
@@ -566,43 +603,70 @@ class Tracker:
             and detection.is_valid_dist
         )
         return update
+    
+    def load_named_feature_vectors(self, csv_file):
+        named_vectors = {}
+        with open(csv_file, mode='r') as infile:
+            reader = csv.reader(infile)
+            next(reader)  # Skip header
+            for row in reader:
+                name, vector_str = row
+                vector = np.fromstring(vector_str.strip("[]"), sep=', ')
+                assert vector.size == 256, f"Feature vector size mismatch for {name}, expected 256 but got {vector.size}"
+                named_vectors[name] = vector
+        return named_vectors
+
+    
+    def compare_with_named_vectors(self, feature_vec):
+        # Assuming feature_vec is a 1D numpy array
+        for name, named_vec in self.named_feature_vectors.items():
+            # Ensure named_vec is also a 1D numpy array
+            sim_score = cos_similarity(feature_vec, named_vec)
+            if sim_score > name_threshold:
+                return name
+        return None
+
 
     def update(self, frame, detection):
         track_id = detection.track_id
         track = self.tracks[track_id]
+        if detection.feature_vec is not None:
+            track.feature_vectors.append(detection.feature_vec.flatten())
 
-        # 1. Update feature vector
+        # Update feature vector
         self.track_vecs[track_id] = detection.feature_vec
 
-        # 2. Update bouding box
-        # *Replace* predicted box added in preprocess with detected person box
+        # Update bounding box
         self.track_boxes[track_id].pop(-1)
         self.track_boxes[track_id].append(detection.box)
 
-        # 3. Apply kalmanfilter and update a track point
+        # Apply kalman filter and update a track point
         center = detection.center
-
-        # *Replace* predicted center added in preprocess with filtered person center
         self.track_points[track_id].pop(-1)
         center, _ = self.kalman_filter(track_id, center, update=True)
         self.track_points[track_id].append(center)
 
-        # 4. Assign new person_id to the track with three consecutive matches and set its status to CONFIRMED
-        track.update()
-        # If the track matched three times in a row, the status is set to CONFIRMED.
-        if track.stats == TENTATIVE and track.hits > 3:
-            track.stats = CONFIRMED
-            track.person_id = self._next_id()
+        # Check if the detection can be matched to a named individual
+        name_match = self.compare_with_named_vectors(detection.feature_vec.flatten())
+        if name_match:
+            # If there is a name match, assign the name as the person_id
+            track.person_id = name_match
+        else:
+            # If no match found, proceed as usual
+            if track.stats == TENTATIVE and track.hits > 3:
+                track.stats = CONFIRMED
+                # If there's no existing person_id, assign a new unique ID
+                if track.person_id is None:
+                    track.person_id = self._next_id()
 
-        # 5. Add euclidean distance which is used evaluate()
+        # Add Euclidean distance for evaluation
         self.euc_distances[track_id].append(detection.euc_dist)
 
-        # 6. Draw tracked information into the frame
-        frame = self.draw_track_info(
-            frame, track_id, detection.box, detection.confidence
-        )
+        # Draw tracked information into the frame
+        frame = self.draw_track_info(frame, track_id, detection.box, detection.confidence)
 
         return frame
+
 
     def not_found(self, det_id, detection):
 
@@ -685,32 +749,33 @@ class Tracker:
     
 
     def save_feature_vectors_to_csv(self, csv_file='feature_vectors.csv'):
-        # First, we need to create a mapping from person_id to track feature vectors
         person_to_feature_vectors = {}
 
-        # Go through all tracks and group their feature vectors by person_id
         for track in self.tracks:
-            if track.stats != DELETED and track.person_id is not None:
-                # If this is the first time we're seeing this person_id, initialize the list
+            if track.stats != DELETED and track.person_id is not None and track.feature_vectors:
+                aggregated_vector = np.mean(np.array(track.feature_vectors), axis=0)
                 if track.person_id not in person_to_feature_vectors:
-                    person_to_feature_vectors[track.person_id] = []
-                
-                # Append the feature vector of the track to the person's list of vectors
-                person_to_feature_vectors[track.person_id].append(self.track_vecs[track.track_id])
+                    person_to_feature_vectors[track.person_id] = aggregated_vector
+                else:
+                    person_to_feature_vectors[track.person_id] = np.mean([person_to_feature_vectors[track.person_id], aggregated_vector], axis=0)
         
-        # Now we'll write the aggregated feature vectors to the CSV
+        seen_feature_ids = list(self.named_feature_vectors.keys())
+        seen_feature_vecs = list(self.named_feature_vectors.values())
+        csv_feature_vecs.append(person_to_feature_vectors)
+        for vec in csv_feature_vecs:
+            for person_id, vector in vec.items():
+                if person_id not in seen_feature_ids:
+                    seen_feature_ids.append(person_id)
+                seen_feature_vecs[seen_feature_ids.index(person_id)] = vector
+
         with open(csv_file, mode='w', newline='') as file:
             writer = csv.writer(file)
             writer.writerow(['Person ID', 'Aggregated Feature Vector'])
-            
-            for person_id, feature_vectors in person_to_feature_vectors.items():
-                # We'll average all the feature vectors for this person_id
-                # You can choose a different aggregation method if needed
-                aggregated_vector = np.mean(feature_vectors, axis=0)
-                vector_flat = aggregated_vector.flatten().tolist()
-                writer.writerow([person_id, vector_flat])
-
+            for i, person_id in enumerate(seen_feature_ids):
+                writer.writerow([person_id, seen_feature_vecs[i].tolist()])
+        
         logger.info(f"Saved feature vectors to {csv_file}")
+
 
     def person_reidentification(self, frame, person_frames, boxes):
         # Preprocess to update the state of existing tracks and determine which are active
